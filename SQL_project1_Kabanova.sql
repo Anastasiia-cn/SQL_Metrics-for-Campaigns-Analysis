@@ -1,64 +1,107 @@
-CREATE OR REPLACE FUNCTION pg_temp.decode_url_part(p varchar) RETURNS varchar AS $$
-SELECT convert_from(CAST(E'\\x' || string_agg(CASE WHEN length(r.m[1]) = 1 THEN encode(convert_to(r.m[1], 'SQL_ASCII'), 'hex') ELSE substring(r.m[1] from 2 for 2) END, '') AS bytea), 'UTF8')
-FROM regexp_matches($1, '%[0-9a-f][0-9a-f]|.', 'gi') AS r(m);
-$$ LANGUAGE SQL IMMUTABLE STRICT;
-
-with hw6 as
+WITH hw6 AS
 (
-select 
+SELECT 
       fabd.ad_date,
       fabd.url_parameters,
-      coalesce(fabd.spend, 0) as spend,
-      coalesce(fabd.impressions, 0) as impressions,
-      coalesce(fabd.reach, 0) as readch,
-      coalesce(fabd.clicks, 0) as clicks,
-      coalesce(fabd.leads, 0) as leads,  
-      coalesce(fabd.value, 0) as value
-from facebook_ads_basic_daily fabd
-full join facebook_adset fa on fa.adset_id = fabd.adset_id
-full join facebook_campaign fc on fc.campaign_id = fabd.campaign_id   
-union all 
-select 
+      COALESCE(fabd.spend, 0) AS spend,
+      COALESCE(fabd.impressions, 0) AS impressions,
+      COALESCE(fabd.reach, 0) AS readch,
+      COALESCE(fabd.clicks, 0) AS clicks,
+      COALESCE(fabd.leads, 0) AS leads,  
+      COALESCE(fabd.value, 0) AS value
+FROM facebook_ads_basic_daily fabd
+FULL JOIN facebook_adset fa ON fa.adset_id = fabd.adset_id
+FULL JOIN facebook_campaign fc ON fc.campaign_id = fabd.campaign_id   
+UNION ALL 
+SELECT 
       gabd.ad_date,
       gabd.url_parameters,
-      coalesce(gabd.spend, 0) as spend,
-      coalesce(gabd.impressions, 0) as impressions,
-      coalesce(gabd.reach, 0) as readch,
-      coalesce(gabd.clicks, 0) as clicks,  
-      coalesce(gabd.leads, 0) as leads,
-      coalesce(gabd.value, 0) as value
-from google_ads_basic_daily gabd 
+      COALESCE(gabd.spend, 0) AS spend,
+      COALESCE(gabd.impressions, 0) AS impressions,
+      COALESCE(gabd.reach, 0) AS readch,
+      COALESCE(gabd.clicks, 0) AS clicks,  
+      COALESCE(gabd.leads, 0) AS leads,
+      COALESCE(gabd.value, 0) AS value
+FROM google_ads_basic_daily gabd 
+),
+hw7 AS
+(
+SELECT
+      CASE
+      	 WHEN DATE_PART('month', ad_date)<=9 THEN CAST(CONCAT(DATE_PART('year', ad_date), '-0', DATE_PART('month', ad_date), '-01') AS date)
+      	 ELSE CAST(CONCAT(DATE_PART('year', ad_date), '-', DATE_PART('month', ad_date), '-01') AS date)
+      END ad_month,
+      CASE
+         WHEN LOWER(SUBSTRING(decode_url_part(url_parameters),'utm_campaign=([^&#$]+)')) = 'nan' THEN NULL 
+         ELSE LOWER(SUBSTRING(decode_url_part(url_parameters),'utm_campaign=([^&#$]+)'))
+      END utm_campaign,
+      SUM(spend) AS total_spend,
+      SUM(impressions) AS total_impressions,
+      SUM(clicks) AS total_clicks,
+      SUM(value) AS total_conversion_value,
+      CASE
+         WHEN (SUM(impressions)<>0) THEN ROUND((CAST(SUM(spend) AS DECIMAL)/CAST(SUM(impressions) AS decimal)*1000),2) 
+         ELSE 0
+      END CPM,
+      CASE 
+      	  WHEN (SUM(spend) <> 0) THEN ROUND(((CAST(SUM(value) AS decimal)-(CAST(SUM(spend) AS decimal)))/CAST(SUM(spend) AS decimal)*100),2)
+      	  ELSE 0
+      END ROMI,
+      cASE 
+      	  WHEN (SUM(impressions) <> 0) THEN ROUND(CAST(SUM(clicks) AS decimal)/CAST(SUM(impressions) AS decimal),2)
+      	  ELSE 0
+      END CTR,
+      CASE  
+      	  WHEN (SUM(clicks) <> 0) THEN ROUND(CAST(SUM(spend) AS decimal)/(CAST(SUM(clicks) AS decimal)),2)
+      	  ELSE 0
+      END CPC
+FROM hw6
+WHERE CASE
+         WHEN LOWER(SUBSTRING(decode_url_part(url_parameters),'utm_campaign=([^&#$]+)')) = 'nan' THEN NULL 
+         ELSE LOWER(SUBSTRING(decode_url_part(url_parameters),'utm_campaign=([^&#$]+)')) 
+         END IS NOT NULL
+GROUP BY ad_month,
+         utm_campaign
+),
+hw7_lag AS
+(
+SELECT 
+      ad_month,
+      utm_campaign,
+      total_spend,
+      total_impressions,
+      total_clicks,
+      total_conversion_value,
+      CPM,
+      CTR,
+      ROMI,
+      CPC,
+      LAG(CPM) OVER (PARTITION BY utm_campaign ORDER BY ad_month) AS CPM_PRIV_MONTH,
+      LAG(CTR) OVER (PARTITION BY utm_campaign ORDER BY ad_month) AS CTR_PRIV_MONTH,
+      LAG(ROMI) OVER (PARTITION BY utm_campaign ORDER BY ad_month) AS ROMI_PRIV_MONTH
+FROM hw7
 )
-select
-      ad_date, 
-      case
-         when lower(substring(decode_url_part(url_parameters),'utm_campaign=([^&#$]+)')) = 'nan' then null 
-         else lower(substring(decode_url_part(url_parameters),'utm_campaign=([^&#$]+)'))
-      end utm_campaign,
-      sum(spend) as total_spend,
-      sum(impressions) as total_impressions,
-      sum(clicks) as total_clicks,
-      sum(value) as total_conversion_value,
-      case
-         when (sum(impressions)<>0) then round((cast(sum(spend) as decimal)/cast(sum(impressions) as decimal)*1000),2) 
-         else 0
-      end CPM,
-      case 
-      	  when (sum(spend) <> 0) then round(((cast(sum(value)as decimal)-(cast(sum(spend)as decimal)))/cast(sum(spend)as decimal)*100),2)
-      	  else 0
-      end ROMI,
-      case 
-      	  when (sum(impressions) <> 0) then round(cast(sum(clicks)as decimal)/cast(sum(impressions)as decimal),2)
-      	  else 0
-      end CTR,
-      case  
-      	  when (sum(clicks) <> 0) then round(cast(sum(spend) as decimal)/(cast(sum(clicks) as decimal)),2)
-      	  else 0
-      end CPC
-from hw6
-where case
-         when lower(substring(decode_url_part(url_parameters),'utm_campaign=([^&#$]+)')) = 'nan' then null 
-         else lower(substring(decode_url_part(url_parameters),'utm_campaign=([^&#$]+)')) 
-         end is not null
-group by ad_date,
-         utm_campaign;
+SELECT 
+     ad_month,
+     utm_campaign,
+     total_spend,
+     total_impressions,
+     total_clicks,
+     total_conversion_value,
+     CPM,
+     ROMI,
+     CTR,
+     CPC,
+     CASE
+     	WHEN CPM_PRIV_MONTH<>0 THEN ROUND((CPM-CPM_PRIV_MONTH)/CPM_PRIV_MONTH*100,1)
+     	ELSE 0
+     END CPM_DIFF,
+     CASE
+     	WHEN CTR_PRIV_MONTH<>0 THEN ROUND((CTR-CTR_PRIV_MONTH)/CTR_PRIV_MONTH*100,1)
+     	ELSE 0
+     END CTR_DIFF,
+     CASE
+     	WHEN ROMI_PRIV_MONTH<>0 THEN ROUND((ROMI-ROMI_PRIV_MONTH)/ROMI_PRIV_MONTH*100,1)
+     	ELSE 0
+     END ROMI_DIFF
+FROM hw7_lag;
