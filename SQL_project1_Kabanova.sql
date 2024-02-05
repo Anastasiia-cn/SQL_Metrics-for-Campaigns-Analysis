@@ -47,7 +47,7 @@ SELECT
       	  WHEN (SUM(spend) <> 0) THEN ROUND(((CAST(SUM(value) AS decimal)-(CAST(SUM(spend) AS decimal)))/CAST(SUM(spend) AS decimal)*100),2)
       	  ELSE 0
       END ROMI,
-      cASE 
+      CASE 
       	  WHEN (SUM(impressions) <> 0) THEN ROUND(CAST(SUM(clicks) AS decimal)/CAST(SUM(impressions) AS decimal),2)
       	  ELSE 0
       END CTR,
